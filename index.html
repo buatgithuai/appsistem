@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TenX Production System - Pro</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script type="module">
+import { 
+  initializeApp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { 
+  getFirestore,
+  collection,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  query,
+  orderBy
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { 
+  getAuth, 
+  onAuthStateChanged, 
+  signOut,
+  signInWithEmailAndPassword
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytesResumable,
+  getDownloadURL,
+  deleteObject
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDXeFJjnY9ZURkIgjM8rOZNCSw44pLzu8U",
+  authDomain: "anjayproject-dc74f.firebaseapp.com",
+  projectId: "anjayproject-dc74f",
+  storageBucket: "anjayproject-dc74f.firebasestorage.app",
+  messagingSenderId: "603625276478",
+  appId: "1:603625276478:web:360ee724e62f02c1ee7d6f",
+  measurementId: "G-NVHTMKF2Z0"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+
+window.loginEmail = async () => {
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+
+  if (!email || !password) {
+    errEl.textContent = '⚠️ Email dan password tidak boleh kosong.';
+    return;
+  }
+
+  try {
+    document.getElementById('loginBtn').disabled = true;
+    document.getElementById('loginBtn').textContent = 'Masuk...';
+    await signInWithEmailAndPassword(auth, email, password);
+  } catch (e) {
+    const msg = {
+      'auth/invalid-credential': '❌ Email atau password salah.',
+      'auth/user-not-found': '❌ Akun tidak ditemukan.',
+      'auth/wrong-password': '❌ Password salah.',
+      'auth/invalid-email': '❌ Format email tidak valid.',
+      'auth/too-many-requests': '⛔ Terlalu banyak percobaan. Coba lagi nanti.'
+    };
+    errEl.textContent = msg[e.code] || ('❌ Login gagal: ' + e.message);
+  } finally {
+    document.getElementById('loginBtn').disabled = false;
+    document.getElementById('loginBtn').textContent = '🔐 Masuk';
+  }
+};
+
+let allOrders = [];
+let currentFilter = { search: '', status: '' };
+const flow = ["masuk","cutting","sablon","jahit","qc","dikirim","selesai"];
+
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    document.getElementById('appContent').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    return;
+  }
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appContent').style.display = 'block';
+  await loadOrders();
+});
+
+async function loadOrders() {
+  try {
+    document.getElementById('loadingOverlay').style.display = 'flex';
+    const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+    const snap = await getDocs(q);
+    allOrders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderFilteredOrders();
+    updateStats();
+  } catch (e) {
+    console.error('Error:', e);
+    showToast('Error loading data: ' + e.message);
+  } finally {
+    document.getElementById('loadingOverlay').style.display = 'none';
+  }
+}
+
+function renderFilteredOrders() {
+  const tableBody = document.getElementById('tableBody');
+  const mobileList = document.getElementById('mobileList');
+  if (tableBody) tableBody.innerHTML = '';
+  if (mobileList) mobileList.innerHTML = '';
+
+  const filtered = allOrders.filter(o => 
+    o.nama?.toLowerCase().includes(currentFilter.search.toLowerCase()) &&
+    (!currentFilter.status || o.status === currentFilter.status)
+  );
+
+  if (filtered.length === 0) {
+    const empty = `<div class="text-center py-12 text-gray-400">
+      <div class="text-5xl mb-3">📭</div>
+      <p class="font-semibold">Tidak ada order ditemukan</p>
+    </div>`;
+    if (mobileList) mobileList.innerHTML = empty;
+  }
+
+  filtered.forEach(o => renderRow(o.id, o));
+}
+
+function renderRow(id, o) {
+  const tableBody = document.getElementById('tableBody');
+  const mobileList = document.getElementById('mobileList');
+
+  const color = {
+    masuk: 'bg-gradient-to-r from-gray-500 to-gray-600 text-white',
+    cutting: 'bg-gradient-to-r from-blue-500 to-blue-700 text-white',
+    sablon: 'bg-gradient-to-r from-yellow-500 to-yellow-600 text-black font-bold',
+    jahit: 'bg-gradient-to-r from-indigo-500 to-indigo-700 text-white',
+    qc: 'bg-gradient-to-r from-purple-500 to-purple-700 text-white',
+    dikirim: 'bg-gradient-to-r from-orange-500 to-orange-700 text-white',
+    selesai: 'bg-gradient-to-r from-emerald-500 to-emerald-700 text-white font-bold'
+  };
+  const dotColor = {
+    masuk:'bg-gray-400', cutting:'bg-blue-500', sablon:'bg-yellow-400',
+    jahit:'bg-indigo-500', qc:'bg-purple-500', dikirim:'bg-orange-500', selesai:'bg-emerald-500'
+  };
+
+  const createdDate = o.createdAt ? new Date(o.createdAt.toDate()).toLocaleDateString('id-ID') : '-';
+  const updatedDate = o.updatedAt ? new Date(o.updatedAt.toDate()).toLocaleDateString('id-ID') : '-';
+  const fileCount = o.files?.length || 0;
+
+  // ── Desktop table row ──
+  if (tableBody) {
+    tableBody.innerHTML += `
+      <tr class="border-b hover:bg-gray-50 transition-all duration-200">
+        <td class="p-4 font-medium">${o.nama || '-'}</td>
+        <td class="p-4">${o.produk || '-'}</td>
+        <td class="p-4">
+          <span class="px-4 py-2 text-sm rounded-full shadow-lg ${color[o.status] || 'bg-gray-500 text-white'} transform hover:scale-105 transition-all duration-200">
+            ${o.status?.toUpperCase() || 'UNKNOWN'}
+          </span>
+        </td>
+        <td class="p-4 hidden md:table-cell">${createdDate}</td>
+        <td class="p-4 hidden lg:table-cell">${updatedDate}</td>
+        <td class="p-4">
+          <div class="flex flex-wrap gap-1">
+            <button onclick="nextStep('${id}')" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg shadow-md text-xs transition-all duration-200">➡️ Next</button>
+            <button onclick="prevStep('${id}')" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg shadow-md text-xs transition-all duration-200">⬅️ Prev</button>
+            <button onclick="showDetail('${id}')" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg shadow-md text-xs transition-all duration-200">👁️ Detail</button>
+            <button onclick="showEdit('${id}')" class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg shadow-md text-xs transition-all duration-200">✏️ Edit</button>
+            <button onclick="deleteOrder('${id}')" class="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg shadow-md text-xs transition-all duration-200">🗑️ Hapus</button>
+          </div>
+        </td>
+      </tr>`;
+  }
+
+  // ── Mobile card ──
+  if (mobileList) {
+    mobileList.innerHTML += `
+      <div class="bg-white rounded-2xl shadow-md p-4 border border-gray-100">
+        <div class="flex items-start justify-between mb-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="w-2.5 h-2.5 rounded-full shrink-0 ${dotColor[o.status] || 'bg-gray-400'}"></span>
+              <h3 class="font-bold text-gray-800 text-base truncate">${o.nama || '-'}</h3>
+            </div>
+            <p class="text-sm text-gray-500 ml-4">👕 ${o.produk || '-'}</p>
+          </div>
+          <span class="ml-2 px-3 py-1 text-xs rounded-full shrink-0 ${color[o.status] || 'bg-gray-500 text-white'}">
+            ${o.status?.toUpperCase() || '-'}
+          </span>
+        </div>
+
+        <div class="flex items-center gap-3 text-xs text-gray-400 mb-4 ml-4">
+          <span>📅 ${createdDate}</span>
+          ${fileCount > 0 ? `<span>📁 ${fileCount} file</span>` : ''}
+        </div>
+
+        <!-- Progress bar -->
+        <div class="mb-4 ml-4">
+          <div class="flex justify-between text-xs text-gray-400 mb-1">
+            <span>Progress</span>
+            <span>${flow.indexOf(o.status) + 1}/${flow.length}</span>
+          </div>
+          <div class="w-full bg-gray-100 rounded-full h-2">
+            <div class="h-2 rounded-full bg-gradient-to-r from-indigo-500 to-blue-500 transition-all duration-500"
+              style="width:${Math.round(((flow.indexOf(o.status)+1)/flow.length)*100)}%"></div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="prevStep('${id}')" class="bg-gray-100 hover:bg-gray-200 text-gray-700 py-2 rounded-xl text-xs font-semibold transition-all">⬅️ Prev</button>
+          <button onclick="nextStep('${id}')" class="bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-xl text-xs font-semibold transition-all">➡️ Next</button>
+          <button onclick="showDetail('${id}')" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-2 rounded-xl text-xs font-semibold transition-all">👁️ Detail & File</button>
+          <button onclick="showEdit('${id}')" class="bg-amber-50 hover:bg-amber-100 text-amber-700 py-2 rounded-xl text-xs font-semibold transition-all">✏️ Edit</button>
+          <button onclick="deleteOrder('${id}')" class="col-span-2 bg-red-50 hover:bg-red-100 text-red-600 py-2 rounded-xl text-xs font-semibold transition-all">🗑️ Hapus Order</button>
+        </div>
+      </div>`;
+  }
+}
+
+window.nextStep = async (id) => {
+  const order = allOrders.find(o => o.id === id);
+  if (!order) return;
+  const idx = flow.indexOf(order.status);
+  if (idx < flow.length - 1) {
+    await updateDoc(doc(db, 'orders', id), {
+      status: flow[idx + 1],
+      updatedAt: new Date()
+    });
+    loadOrders();
+    showToast(`✅ Status → ${flow[idx + 1].toUpperCase()}`);
+  }
+};
+
+window.prevStep = async (id) => {
+  const order = allOrders.find(o => o.id === id);
+  if (!order) return;
+  const idx = flow.indexOf(order.status);
+  if (idx > 0) {
+    await updateDoc(doc(db, 'orders', id), {
+      status: flow[idx - 1],
+      updatedAt: new Date()
+    });
+    loadOrders();
+    showToast(`↩️ Status ← ${flow[idx - 1].toUpperCase()}`);
+  }
+};
+
+window.deleteOrder = async (id) => {
+  if (confirm('Yakin hapus order ini?')) {
+    // Hapus semua file di storage juga
+    const order = allOrders.find(o => o.id === id);
+    if (order?.files?.length) {
+      for (const f of order.files) {
+        try { await deleteObject(storageRef(storage, f.path)); } catch(_) {}
+      }
+    }
+    await deleteDoc(doc(db, 'orders', id));
+    loadOrders();
+    showToast('🗑️ Order dihapus!');
+  }
+};
+
+// ── Upload helper — PARALEL biar cepat ─────────────────────
+async function uploadFiles(orderId, files) {
+  const uploads = Array.from(files).map(file => {
+    const path = `orders/${orderId}/${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`;
+    const sRef = storageRef(storage, path);
+    return new Promise((res, rej) => {
+      const task = uploadBytesResumable(sRef, file);
+      task.on('state_changed', null, rej, async () => {
+        const url = await getDownloadURL(task.snapshot.ref);
+        res({ name: file.name, url, path, type: file.type, size: file.size });
+      });
+    });
+  });
+  return Promise.all(uploads);
+}
+
+function fileIcon(type) {
+  if (type?.startsWith('image/')) return '🖼️';
+  if (type === 'application/pdf') return '📄';
+  return '📎';
+}
+
+// ── Download — langsung pakai URL Firebase Storage (sudah punya token) ──
+window.downloadFile = (url, name) => {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('⬇️ Mengunduh ' + name);
+};
+
+function renderFileList(files, orderId, editable = false) {
+  if (!files?.length) return `<p class="text-gray-400 text-xs italic">Belum ada file.</p>`;
+  return files.map((f, i) => `
+    <div class="flex items-center justify-between gap-2 bg-gray-50 rounded-xl px-3 py-2">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="text-lg">${fileIcon(f.type)}</span>
+        <span class="text-sm font-medium truncate max-w-[160px]" title="${f.name}">${f.name}</span>
+      </div>
+      <div class="flex gap-1 shrink-0">
+        <button onclick="downloadFile('${f.url.replace(/'/g,"\\'")}','${f.name.replace(/'/g,"\\'")}' )"
+           class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded-lg text-xs font-semibold transition-all">
+          ⬇️ Unduh
+        </button>
+        ${editable ? `<button onclick="deleteFile('${orderId}',${i})" class="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded-lg text-xs font-semibold transition-all">🗑️</button>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+window.deleteFile = async (orderId, fileIdx) => {
+  if (!confirm('Hapus file ini?')) return;
+  const order = allOrders.find(o => o.id === orderId);
+  if (!order) return;
+  const files = [...(order.files || [])];
+  const [removed] = files.splice(fileIdx, 1);
+  try { await deleteObject(storageRef(storage, removed.path)); } catch(_) {}
+  await updateDoc(doc(db, 'orders', orderId), { files, updatedAt: new Date() });
+  await loadOrders();
+  showDetail(orderId);
+  showToast('🗑️ File dihapus!');
+};
+
+window.uploadDetailFiles = async (orderId) => {
+  const input = document.getElementById('detailFileInput');
+  if (!input?.files?.length) { showToast('⚠️ Pilih file dulu!'); return; }
+  const btn = document.getElementById('uploadDetailBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Mengupload...';
+  try {
+    const order = allOrders.find(o => o.id === orderId);
+    const existing = order?.files || [];
+    const newFiles = await uploadFiles(orderId, Array.from(input.files));
+    const merged = [...existing, ...newFiles];
+    await updateDoc(doc(db, 'orders', orderId), { files: merged, updatedAt: new Date() });
+    await loadOrders();
+    showDetail(orderId);
+    showToast(`✅ ${newFiles.length} file diupload!`);
+  } catch(e) {
+    showToast('❌ Upload gagal: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '⬆️ Upload';
+  }
+};
+
+window.showDetail = (id) => {
+  const order = allOrders.find(o => o.id === id);
+  if (!order) return;
+
+  document.getElementById('detailBox').innerHTML = `
+    <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-lg overflow-y-auto" style="max-height:90vh">
+      <div class="flex justify-between items-center mb-6 pb-4 border-b">
+        <h2 class="text-2xl font-bold text-gray-800">📋 Detail Order</h2>
+        <button onclick="closeDetail()" class="text-2xl text-gray-500 hover:text-gray-700">×</button>
+      </div>
+
+      <div class="space-y-3 text-sm mb-6">
+        <div><strong>Nama:</strong> ${order.nama || '-'}</div>
+        <div><strong>Produk:</strong> ${order.produk || '-'}</div>
+        <div><strong>No HP:</strong> ${order.nohp || '-'}</div>
+        <div><strong>Status:</strong> <span class="px-3 py-1 rounded-full text-white text-xs font-bold ${getStatusColor(order.status)}">${order.status?.toUpperCase()}</span></div>
+        ${order.notes ? `<div><strong>Catatan:</strong> ${order.notes}</div>` : ''}
+      </div>
+
+      <!-- File List -->
+      <div class="border-t pt-5">
+        <h3 class="font-bold text-gray-700 mb-3">📁 File & Dokumen</h3>
+        <div id="detailFileList" class="space-y-2 mb-4">
+          ${renderFileList(order.files, id, true)}
+        </div>
+        <div class="bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-4">
+          <label class="block text-sm font-semibold text-gray-600 mb-2">➕ Tambah File</label>
+          <input id="detailFileInput" type="file" multiple accept="*/*"
+            class="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white file:font-semibold hover:file:bg-indigo-700 cursor-pointer">
+          <button id="uploadDetailBtn" onclick="uploadDetailFiles('${id}')"
+            class="mt-3 w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white py-2 px-4 rounded-xl font-semibold text-sm transition-all">
+            ⬆️ Upload File
+          </button>
+        </div>
+      </div>
+
+      <button onclick="closeDetail()" class="mt-6 w-full bg-gray-600 hover:bg-gray-700 text-white py-3 px-6 rounded-xl font-semibold transition-all duration-200">
+        Tutup
+      </button>
+    </div>`;
+  document.getElementById('modal').style.display = 'flex';
+};
+
+// ── Edit Order ──────────────────────────────────────────────
+window.showEdit = (id) => {
+  const order = allOrders.find(o => o.id === id);
+  if (!order) return;
+  document.getElementById('editOrderId').value = id;
+  document.getElementById('editNama').value = order.nama || '';
+  document.getElementById('editProduk').value = order.produk || '';
+  document.getElementById('editNohp').value = order.nohp || '';
+  document.getElementById('editNotes').value = order.notes || '';
+  document.getElementById('editModal').style.display = 'flex';
+};
+
+window.closeEdit = () => {
+  document.getElementById('editModal').style.display = 'none';
+};
+
+window.submitEditOrder = async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('editOrderId').value;
+  const btn = document.getElementById('editSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Menyimpan...';
+  try {
+    await updateDoc(doc(db, 'orders', id), {
+      nama: document.getElementById('editNama').value,
+      produk: document.getElementById('editProduk').value,
+      nohp: document.getElementById('editNohp').value,
+      notes: document.getElementById('editNotes').value,
+      updatedAt: new Date()
+    });
+    await loadOrders();
+    closeEdit();
+    showToast('✅ Order berhasil diperbarui!');
+  } catch(e) {
+    showToast('❌ Gagal update: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✅ Simpan Perubahan';
+  }
+};
+
+function getStatusColor(status) {
+  const color = {
+    masuk: 'bg-gray-500', cutting: 'bg-blue-600', sablon: 'bg-yellow-500 text-black',
+    jahit: 'bg-indigo-600', qc: 'bg-purple-600', dikirim: 'bg-orange-600', selesai: 'bg-emerald-600'
+  };
+  return color[status] || 'bg-gray-500';
+}
+
+window.closeDetail = () => {
+  document.getElementById('modal').style.display = 'none';
+};
+
+window.exportExcel = () => {
+  const filteredOrders = allOrders.filter(o => 
+    o.nama?.toLowerCase().includes(currentFilter.search.toLowerCase()) &&
+    (!currentFilter.status || o.status === currentFilter.status)
+  );
+  
+  const data = filteredOrders.map(o => ({
+    ID: o.id, Nama: o.nama, Produk: o.produk, 'No HP': o.nohp,
+    Status: o.status, Catatan: o.notes || '',
+    'Dibuat': o.createdAt?.toDate()?.toLocaleDateString('id-ID') || '',
+    'Diupdate': o.updatedAt?.toDate()?.toLocaleDateString('id-ID') || ''
+  }));
+  
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Orders");
+  XLSX.writeFile(wb, `tenx-orders-${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast('📊 Excel diexport!');
+};
+
+window.applyFilter = () => {
+  currentFilter.search = document.getElementById('search').value;
+  currentFilter.status = document.getElementById('filter').value;
+  renderFilteredOrders();
+  updateStats();
+};
+
+function updateStats() {
+  const statsContainer = document.getElementById('statsContainer');
+  const stats = {};
+  allOrders.forEach(o => stats[o.status] = (stats[o.status] || 0) + 1);
+  
+  statsContainer.innerHTML = flow.map(status => `
+    <div class="bg-white p-4 rounded-xl shadow-md text-center cursor-pointer hover:shadow-lg transition-all duration-200" onclick="document.getElementById('filter').value='${status}'; applyFilter()">
+      <div class="text-2xl font-bold ${getStatusColor(status).replace('bg-', 'text-') || 'text-gray-600'}">
+        ${stats[status] || 0}
+      </div>
+      <div class="text-xs text-gray-600 uppercase tracking-wide mt-1">${status}</div>
+    </div>
+  `).join('');
+}
+
+function showToast(message) {
+  const toast = document.createElement('div');
+  toast.className = 'fixed top-20 right-6 bg-green-600 text-white px-6 py-4 rounded-xl shadow-2xl z-50 font-semibold transform translate-x-full animate-slidein';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  
+  setTimeout(() => toast.classList.remove('translate-x-full'), 100);
+  setTimeout(() => {
+    toast.classList.add('animate-slideout');
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+window.addNewOrder = () => {
+  document.getElementById('newOrderModal').style.display = 'flex';
+};
+
+window.closeNewOrder = () => {
+  document.getElementById('newOrderModal').style.display = 'none';
+  document.getElementById('newOrderForm').reset();
+};
+
+window.submitNewOrder = async (e) => {
+  e.preventDefault();
+  const formData = new FormData(e.target);
+  const fileInput = document.getElementById('newOrderFiles');
+  const submitBtn = document.getElementById('submitOrderBtn');
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = '⏳ Menyimpan...';
+
+  try {
+    // Simpan order dulu untuk dapat ID
+    const docRef = await addDoc(collection(db, 'orders'), {
+      nama: formData.get('nama'),
+      produk: formData.get('produk'),
+      nohp: formData.get('nohp'),
+      status: 'masuk',
+      notes: formData.get('notes') || '',
+      files: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    // Upload file kalau ada
+    if (fileInput?.files?.length) {
+      submitBtn.textContent = '⏳ Mengupload file...';
+      const uploaded = await uploadFiles(docRef.id, Array.from(fileInput.files));
+      await updateDoc(doc(db, 'orders', docRef.id), { files: uploaded });
+    }
+
+    loadOrders();
+    closeNewOrder();
+    showToast('✅ Order baru ditambahkan!');
+  } catch (e) {
+    showToast('❌ Error: ' + e.message);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = '✅ Simpan Order';
+  }
+};
+
+window.signOutUser = () => signOut(auth);
+</script>
+</head>
+<body class="bg-gradient-to-br from-gray-50 to-blue-50 min-h-screen font-sans">
+
+<!-- Login Screen -->
+<div id="loginScreen" style="display:none" class="min-h-screen fixed inset-0 bg-gradient-to-br from-indigo-50 to-blue-100 flex items-center justify-center z-50">
+  <div class="bg-white p-10 rounded-3xl shadow-2xl max-w-sm w-full mx-4">
+    <div class="text-center mb-8">
+      <div class="text-5xl mb-4">🔥</div>
+      <h1 class="text-3xl font-black bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent mb-1">TenX Production</h1>
+      <p class="text-gray-500 text-sm">Masuk untuk melanjutkan</p>
+    </div>
+    <div class="space-y-4">
+      <div>
+        <label class="block text-sm font-semibold text-gray-700 mb-1">0 Email</label>
+        <input id="loginEmail" type="email" placeholder="email@contoh.com"
+          class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all text-base"
+          onkeydown="if(event.key==='Enter') loginEmail()">
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-gray-700 mb-1"> Password</label>
+        <input id="loginPassword" type="password" placeholder="••••••••"
+          class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all text-base"
+          onkeydown="if(event.key==='Enter') loginEmail()">
+      </div>
+      <p id="loginError" class="text-red-500 text-sm min-h-[20px]"></p>
+      <button id="loginBtn" onclick="loginEmail()"
+        class="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white px-6 py-4 rounded-xl text-lg font-semibold shadow-lg hover:shadow-xl transition-all duration-300">
+         Masuk
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- App Content -->
+<div id="appContent" style="display:none" class="pb-20 md:pb-6">
+
+  <!-- ══ MOBILE HEADER ══ -->
+  <div class="md:hidden sticky top-0 z-30 bg-white border-b border-gray-200 shadow-sm px-4 py-3 flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-black bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent">🔥 TenX</h1>
+      <p class="text-xs text-gray-400">Production System</p>
+    </div>
+    <button onclick="addNewOrder()" class="bg-gradient-to-r from-emerald-500 to-green-600 text-white px-4 py-2 rounded-xl text-sm font-semibold shadow-md">
+      ➕ Tambah
+    </button>
+  </div>
+
+  <!-- ══ DESKTOP HEADER ══ -->
+  <div class="hidden md:block max-w-7xl mx-auto px-6 pt-6">
+    <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 gap-6">
+      <div>
+        <h1 class="text-4xl lg:text-5xl font-black bg-gradient-to-r from-indigo-600 via-purple-600 to-blue-600 bg-clip-text text-transparent mb-2">
+          🔥 TenX Production
+        </h1>
+        <p class="text-xl text-gray-600 font-semibold">Production Management System</p>
+      </div>
+      <div class="flex flex-wrap gap-3 w-full lg:w-auto">
+        <button onclick="addNewOrder()" class="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 font-semibold flex-1 lg:flex-none">
+           Tambah Order
+        </button>
+        <button onclick="signOutUser()" class="bg-gray-600 hover:bg-gray-700 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 font-semibold">
+           Logout
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="max-w-7xl mx-auto px-4 md:px-6">
+
+    <!-- Stats -->
+    <div class="grid grid-cols-4 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-4 mb-4 md:mb-8 mt-4 md:mt-0" id="statsContainer"></div>
+
+    <!-- Search & Filter -->
+    <div class="bg-white rounded-2xl shadow-xl p-4 md:p-6 mb-4 md:mb-8">
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input id="search" oninput="applyFilter()" placeholder="🔍 Cari nama customer..."
+               class="flex-1 p-3 md:p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all text-base">
+        <select id="filter" onchange="applyFilter()" class="p-3 md:p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all text-base">
+          <option value=""> Semua Status</option>
+          <option value="masuk"> Masuk</option>
+          <option value="cutting"> Desain</option>
+          <option value="sablon"> Produksi</option>
+          <option value="jahit"> Packing</option>
+          <option value="qc"> QC</option>
+          <option value="dikirim"> Dikirim</option>
+          <option value="selesai"> Selesai</option>
+        </select>
+        <button onclick="exportExcel()" class="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-4 py-3 rounded-xl shadow-lg transition-all font-semibold text-sm md:text-base whitespace-nowrap">
+           Export Excel
+        </button>
+      </div>
+    </div>
+
+    <!-- ══ MOBILE: Card List ══ -->
+    <div class="md:hidden space-y-3 mb-6" id="mobileList"></div>
+
+    <!-- ══ DESKTOP: Table ══ -->
+    <div class="hidden md:block bg-white rounded-2xl shadow-2xl overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full">
+          <thead class="bg-gradient-to-r from-gray-800 to-gray-900 text-white">
+            <tr>
+              <th class="p-4 text-left font-black"> Nama</th>
+              <th class="p-4 text-left font-black"> Produk</th>
+              <th class="p-4 text-left font-black"> Status</th>
+              <th class="p-4 text-left font-black hidden md:table-cell"> Dibuat</th>
+              <th class="p-4 text-left font-black hidden lg:table-cell"> Update</th>
+              <th class="p-4 text-left font-black"> Aksi</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody" class="divide-y divide-gray-100"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /max-w -->
+</div><!-- /appContent -->
+
+<!-- ══ MOBILE BOTTOM NAV ══ -->
+<div class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-2xl z-30 flex">
+  <button onclick="applyFilter()" class="flex-1 flex flex-col items-center py-3 text-indigo-600 font-semibold">
+    <span class="text-xl">📋</span>
+    <span class="text-xs mt-0.5">Order</span>
+  </button>
+  <button onclick="addNewOrder()" class="flex-1 flex flex-col items-center py-3 text-emerald-600 font-semibold">
+    <span class="text-xl"></span>
+    <span class="text-xs mt-0.5">Tambah</span>
+  </button>
+  <button onclick="exportExcel()" class="flex-1 flex flex-col items-center py-3 text-green-600 font-semibold">
+    <span class="text-xl"></span>
+    <span class="text-xs mt-0.5">Export</span>
+  </button>
+  <button onclick="signOutUser()" class="flex-1 flex flex-col items-center py-3 text-gray-500 font-semibold">
+    <span class="text-xl"></span>
+    <span class="text-xs mt-0.5">Logout</span>
+  </button>
+</div>
+
+<!-- Detail Modal -->
+<div id="modal" style="display:none" class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+  <div id="detailBox"></div>
+</div>
+
+<!-- New Order Modal -->
+<div id="newOrderModal" style="display:none" class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+  <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 md:p-8 max-h-[90vh] overflow-y-auto">
+    <div class="flex justify-between items-center mb-6 md:mb-8">
+      <h2 class="text-2xl md:text-3xl font-black bg-gradient-to-r from-emerald-600 to-green-600 bg-clip-text text-transparent">
+         Tambah Order
+      </h2>
+      <button onclick="closeNewOrder()" class="text-3xl text-gray-500 hover:text-gray-700 font-bold">×</button>
+    </div>
+    <form id="newOrderForm" onsubmit="submitNewOrder(event)">
+      <div class="space-y-4 md:space-y-6">
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> Nama Customer *</label>
+          <input type="text" name="nama" required class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 transition-all text-base" placeholder="Nama lengkap">
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> Produk *</label>
+          <input type="text" name="produk" required class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 transition-all text-base" placeholder="Kaos, Jaket, dll">
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> No. HP *</label>
+          <input type="tel" name="nohp" required class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 transition-all text-base" placeholder="081xxxxxxxxx">
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> Catatan (Opsional)</label>
+          <textarea name="notes" rows="3" class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 transition-all text-base resize-vertical" placeholder="Catatan khusus..."></textarea>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> File / Foto Desain (Opsional)</label>
+          <div class="bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-4">
+            <input id="newOrderFiles" type="file" multiple accept="*/*"
+              class="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-emerald-600 file:text-white file:font-semibold hover:file:bg-emerald-700 cursor-pointer">
+            <p class="text-xs text-gray-400 mt-2">Bisa pilih banyak file sekaligus. Foto, PDF, atau file apapun.</p>
+          </div>
+        </div>
+      </div>
+      <div class="mt-6 pt-6 border-t flex flex-col sm:flex-row gap-3">
+        <button type="button" onclick="closeNewOrder()" class="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-4 px-6 rounded-xl shadow-lg transition-all font-semibold text-base">
+           Batal
+        </button>
+        <button type="submit" id="submitOrderBtn" class="flex-1 bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white py-4 px-6 rounded-xl shadow-lg transition-all font-semibold text-base">
+           Simpan Order
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Order Modal -->
+<div id="editModal" style="display:none" class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+  <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 md:p-8 max-h-[90vh] overflow-y-auto">
+    <div class="flex justify-between items-center mb-6 md:mb-8">
+      <h2 class="text-2xl md:text-3xl font-black bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent">
+         Edit Order
+      </h2>
+      <button onclick="closeEdit()" class="text-3xl text-gray-500 hover:text-gray-700 font-bold">×</button>
+    </div>
+    <form onsubmit="submitEditOrder(event)">
+      <input type="hidden" id="editOrderId">
+      <div class="space-y-4 md:space-y-6">
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> Nama Customer *</label>
+          <input id="editNama" type="text" required class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-amber-500 focus:ring-2 focus:ring-amber-100 transition-all text-base" placeholder="Nama lengkap">
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> Produk *</label>
+          <input id="editProduk" type="text" required class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-amber-500 focus:ring-2 focus:ring-amber-100 transition-all text-base" placeholder="Kaos, Jaket, dll">
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> No. HP *</label>
+          <input id="editNohp" type="tel" required class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-amber-500 focus:ring-2 focus:ring-amber-100 transition-all text-base" placeholder="081xxxxxxxxx">
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-2"> Catatan</label>
+          <textarea id="editNotes" rows="3" class="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-amber-500 focus:ring-2 focus:ring-amber-100 transition-all text-base resize-vertical" placeholder="Catatan khusus..."></textarea>
+        </div>
+      </div>
+      <div class="mt-6 pt-6 border-t flex flex-col sm:flex-row gap-3">
+        <button type="button" onclick="closeEdit()" class="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-4 px-6 rounded-xl shadow-lg transition-all font-semibold text-base">
+           Batal
+        </button>
+        <button type="submit" id="editSubmitBtn" class="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white py-4 px-6 rounded-xl shadow-lg transition-all font-semibold text-base">
+          Simpan Perubahan
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Loading Overlay -->
+<div id="loadingOverlay" style="display:none" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-40">
+  <div class="bg-white p-8 rounded-2xl shadow-2xl text-center">
+    <div class="w-16 h-16 border-4 border-gray-200 border-t-emerald-600 rounded-full animate-spin mx-auto mb-4"></div>
+    <p class="text-lg font-semibold text-gray-700">Loading data...</p>
+  </div>
+</div>
+
+<style>
+@keyframes slidein {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes slideout {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+.animate-slidein { animation: slidein 0.3s ease-out; }
+.animate-slideout { animation: slideout 0.3s ease-in forwards; }
+</style>
+
+</body>
+</html>
